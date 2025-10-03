@@ -1,4 +1,5 @@
 #DeadBot
+
 I''m bored so I will implement this challange
 
 ## Rust Discord Bot Challenge: "CodeCollab Bot"
@@ -14,22 +15,22 @@ Create a Discord bot that helps developers collaborate on code snippets within D
 
 ### Technical Requirements:
 
-• Use serenity or twilight for Discord API
-• Implement slash commands and message components
-• Store data in SQLite/PostgreSQL
-• Add rate limiting and permission systems
-• Support multiple programming languages for execution
+- Use serenity or twilight for Discord API
+- Implement slash commands and message components
+- Store data in SQLite/PostgreSQL
+- Add rate limiting and permission systems
+- Support multiple programming languages for execution
 
 ### Advanced Challenges:
 
-• Real-time collaboration using WebSockets
-• AI code suggestions using local models
-• Git integration for snippet versioning
-• Custom syntax highlighting for Discord embeds
+- Real-time collaboration using WebSockets
+- AI code suggestions using local models
+- Git integration for snippet versioning
+- Custom syntax highlighting for Discord embeds
 
 ### Bonus Points:
 
-• Deploy using Docker
-• Add comprehensive error handling
-• Implement caching with Redis
-• Create a web dashboard
+- Deploy using Docker
+- Add comprehensive error handling
+- Implement caching with Redis
+- Create a web dashboard

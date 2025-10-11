@@ -193,7 +193,8 @@
               name = "nix flake check";
               entry = "nix flake check";
               language = "system";
-              files = "\\.nix$";
+              pass_filenames = false;
+              always_run = true;
             };
 
             # Git hooks

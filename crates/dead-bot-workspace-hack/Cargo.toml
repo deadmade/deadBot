@@ -1,0 +1,10 @@
+[package]
+name = "dead-bot-workspace-hack"
+version = "0.1.0"
+edition = "2021"
+
+### BEGIN HAKARI SECTION
+### END HAKARI SECTION
+
+[lib]
+doctest = false

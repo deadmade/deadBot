@@ -2,105 +2,257 @@
   description = "DeadBot Flake Env";
 
   inputs = {
-    nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1";
-    fenix = {
-      url = "github:nix-community/fenix";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    arion = {
+      url = "github:hercules-ci/arion";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    cargo2nix = {
-      url = "github:cargo2nix/cargo2nix/release-0.11.0";
+    crane.url = "github:ipetkov/crane/v0.21.1";
+    git-hooks = {
+      url = "github:cachix/git-hooks.nix";
       inputs.nixpkgs.follows = "nixpkgs";
+    };
+    flake-utils.url = "github:numtide/flake-utils";
+
+    treefmt-nix = {
+      url = "github:numtide/treefmt-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
+    advisory-db = {
+      url = "github:rustsec/advisory-db";
+      flake = false;
     };
   };
 
-  outputs =
-    inputs:
-    let
-      supportedSystems = [
-        "x86_64-linux"
-        "aarch64-linux"
-        "x86_64-darwin"
-        "aarch64-darwin"
-      ];
-      forEachSupportedSystem =
-        f:
-        inputs.nixpkgs.lib.genAttrs supportedSystems (
-          system:
-          f {
-            pkgs = import inputs.nixpkgs {
-              inherit system;
-              overlays = [
-                inputs.self.overlays.default
-              ];
-            };
-          }
-        );
-    in
-    {
-      overlays.default = final: prev: {
-        rustToolchain =
-          with inputs.fenix.packages.${prev.stdenv.hostPlatform.system};
-          combine (
-            with stable;
-            [
-              clippy
-              rustc
-              cargo
-              rustfmt
-              rust-src
-            ]
-          );
+  outputs = {
+    self,
+    nixpkgs,
+    crane,
+    flake-utils,
+    arion,
+    git-hooks,
+    treefmt-nix,
+    advisory-db,
+    ...
+  }:
+    flake-utils.lib.eachDefaultSystem (system: let
+      pkgs = nixpkgs.legacyPackages.${system};
+
+      inherit (pkgs) lib;
+
+      craneLib = crane.mkLib pkgs;
+      src = craneLib.cleanCargoSource ./.;
+
+      commonArgs = {
+        inherit src;
+        strictDeps = true;
+
+        buildInputs = [
+          # Add additional build inputs here
+          #openssl
+        ];
+
+        # Additional environment variables can be set directly
+        # MY_CUSTOM_VAR = "some value";
       };
 
-      packages = forEachSupportedSystem (
-        { pkgs }:
-        {
-          dead-bot = pkgs.rustPlatform.buildRustPackage {
-            pname = "dead-bot";
-            version = "0.1.0";
-            src = ./dead-bot;
-            cargoHash = "sha256-lnjQb42ynfT+Pn9VLmtQ/yFLjq5yttzlsBaRjrbNxgQ=";
-            
-            nativeBuildInputs = with pkgs; [
-              pkg-config
-            ];
-            
-            buildInputs = with pkgs; [
-              openssl
-            ];
-          };
-          default = inputs.self.packages.${pkgs.system}.dead-bot;
+      # Build *just* the cargo dependencies (of the entire workspace),
+      # so we can reuse all of that work (e.g. via cachix) when running in CI
+      # It is *highly* recommended to use something like cargo-hakari to avoid
+      # cache misses when building individual top-level-crates
+      cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+
+      individualCrateArgs =
+        commonArgs
+        // {
+          inherit cargoArtifacts;
+          inherit (craneLib.crateNameFromCargoToml {inherit src;}) version;
+          # NB: we disable tests since we'll run them all via cargo-nextest
+          doCheck = false;
+        };
+
+      fileSetForCrate = crate:
+        lib.fileset.toSource {
+          root = ./.;
+          fileset = lib.fileset.unions [
+            ./Cargo.toml
+            ./Cargo.lock
+            (craneLib.fileset.commonCargoSources ./crates/dead-bot-workspace-hack)
+            (craneLib.fileset.commonCargoSources crate)
+          ];
+        };
+
+      dead-bot = craneLib.buildPackage (
+        individualCrateArgs
+        // {
+          pname = "dead-bot";
+          cargoExtraArgs = "-p dead-bot";
+          src = fileSetForCrate ./crates/dead-bot;
         }
       );
+    in {
+      checks = {
+        inherit dead-bot;
 
-      devShells = forEachSupportedSystem (
-        { pkgs }:
-        {
-          default = pkgs.mkShell {
-            packages = with pkgs; [
-              #Rust Stuff
-              rustToolchain
-              openssl
-              pkg-config
-              cargo-deny
-              cargo-edit
-              cargo-watch
-              rust-analyzer
+        deadBot-clippy = craneLib.cargoClippy (
+          commonArgs
+          // {
+            inherit cargoArtifacts;
+            cargoClippyExtraArgs = "--all-targets -- --deny warnings";
+          }
+        );
 
-              # cargo2nix tool
-              inputs.cargo2nix.packages.${pkgs.system}.cargo2nix
+        deadBot-doc = craneLib.cargoDoc (
+          commonArgs
+          // {
+            inherit cargoArtifacts;
+            # This can be commented out or tweaked as necessary, e.g. set to
+            # `--deny rustdoc::broken-intra-doc-links` to only enforce that lint
+            env.RUSTDOCFLAGS = "--deny warnings";
+          }
+        );
 
-              lazydocker
-              lazygit
-              pre-commit
-            ];
+        # Check formatting
+        deadBot-fmt = craneLib.cargoFmt {
+          inherit src;
+        };
 
-            env = {
-              # Required by rust-analyzer
-              RUST_SRC_PATH = "${pkgs.rustToolchain}/lib/rustlib/src/rust/library";
+        deadBot-toml-fmt = craneLib.taploFmt {
+          src = pkgs.lib.sources.sourceFilesBySuffices src [".toml"];
+          # taplo arguments can be further customized below as needed
+          # taploExtraArgs = "--config ./taplo.toml";
+        };
+
+        # Audit dependencies
+        deadBot-audit = craneLib.cargoAudit {
+          inherit src advisory-db;
+        };
+
+        # Run tests with cargo-nextest
+        # Consider setting `doCheck = false` on other crate derivations
+        # if you do not want the tests to run twice
+        deadBot-nextest = craneLib.cargoNextest (
+          commonArgs
+          // {
+            inherit cargoArtifacts;
+            partitions = 1;
+            partitionType = "count";
+            cargoNextestPartitionsExtraArgs = "--no-tests=pass";
+          }
+        );
+
+        # Ensure that cargo-hakari is up to date
+        deadBot-hakari = craneLib.mkCargoDerivation {
+          inherit src;
+          pname = "deadBot-hakari";
+          cargoArtifacts = null;
+          doInstallCargoArtifacts = false;
+
+          buildPhaseCargoCommand = ''
+            cargo hakari generate --diff  # workspace-hack Cargo.toml is up-to-date
+            cargo hakari manage-deps --dry-run  # all workspace crates depend on workspace-hack
+            cargo hakari verify
+          '';
+
+          nativeBuildInputs = [
+            pkgs.cargo-hakari
+          ];
+        };
+      };
+
+      packages = {
+        inherit dead-bot;
+        dead-bot-docker = pkgs.dockerTools.buildImage {
+          name = "dead-bot";
+          tag = "latest";
+          config = {
+            Cmd = ["${self.packages.${system}.dead-bot}/bin/dead-bot"];
+            User = "1000:1000";
+          };
+        };
+      };
+
+      devShells = {
+        pre-commit-check = git-hooks.lib.${system}.run {
+          src = ./.;
+          hooks = {
+            # Validate flake
+            flake-checker.enable = true;
+
+            nix-fmt = {
+              enable = true;
+              name = "nix fmt";
+              entry = "nix fmt .";
+              language = "system";
+              files = "\\.nix$";
             };
+
+            # Git hooks
+            check-merge-conflicts.enable = true;
+            convco.enable = true;
+            check-added-large-files.enable = true;
+            end-of-file-fixer.enable = true;
+            trufflehog.enable = true;
           };
-        }
-      );
-    };
+        };
+
+        default = craneLib.devShell {
+          inherit (self.devShells.${system}.pre-commit-check) shellHook;
+          checks = self.checks.${system};
+
+          packages = with pkgs; [
+            #Rust Stuff
+            openssl
+            pkg-config
+            cargo-deny
+            cargo-edit
+            cargo-watch
+            cargo-hakari
+            rust-analyzer
+
+            # Docker and container tools
+            lazydocker
+
+            # Arion for managing Docker Compose
+            arion.packages.${pkgs.system}.arion
+
+            # Development tools
+            lazygit
+            nodejs
+          ];
+
+          env = {
+            # Required by rust-analyzer
+            RUST_SRC_PATH = "${pkgs.rustc}/lib/rustlib/src/rust/library";
+          };
+        };
+      };
+
+      formatter =
+        (treefmt-nix.lib.evalModule pkgs {
+          projectRootFile = "flake.nix";
+          programs.alejandra.enable = true;
+          programs.rustfmt.enable = true;
+          programs.deadnix.enable = true;
+          programs.taplo.enable = true;
+        }).config.build.wrapper;
+
+      # Arion project configuration
+      #      nixosConfigurations.arion = arion.lib.eval {
+      #        modules = [
+      #          ./arion-compose.nix
+      #          {
+      #            services.dead-bot.service = {
+      #              image = self.packages.x86_64-linux.dead-bot-docker;
+      #              build = null; # Disable build when using pre-built image
+      #            };
+      #          }
+      #        ];
+      #        pkgs = import nixpkgs {
+      #          system = "x86_64-linux";
+      #          overlays = [self.overlays.default];
+      #        };
+      #      };
+    });
 }

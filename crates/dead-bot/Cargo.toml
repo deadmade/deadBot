@@ -1,0 +1,15 @@
+[package]
+name = "dead-bot"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dead-bot-workspace-hack = { version = "0.1", path = "../dead-bot-workspace-hack" }
+dotenv = "0.15"
+serenity = { version = "0.12", default-features = false, features = [
+  "client",
+  "gateway",
+  "rustls_backend",
+  "model",
+] }
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }

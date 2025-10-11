@@ -188,6 +188,14 @@
               files = "\\.nix$";
             };
 
+            flake-check = {
+              enable = true;
+              name = "nix flake check";
+              entry = "nix flake check";
+              language = "system";
+              files = "\\.nix$";
+            };
+
             # Git hooks
             check-merge-conflicts.enable = true;
             convco.enable = true;
@@ -198,7 +206,9 @@
         };
 
         default = craneLib.devShell {
-          inherit (self.devShells.${system}.pre-commit-check) shellHook;
+          shellHook = ''
+            ${self.devShells.${system}.pre-commit-check.shellHook}
+          '';
           checks = self.checks.${system};
 
           packages = with pkgs; [
@@ -219,7 +229,7 @@
 
             # Development tools
             lazygit
-            nodejs
+            redis
           ];
 
           env = {
@@ -239,20 +249,22 @@
         }).config.build.wrapper;
 
       # Arion project configuration
-      #      nixosConfigurations.arion = arion.lib.eval {
-      #        modules = [
-      #          ./arion-compose.nix
-      #          {
-      #            services.dead-bot.service = {
-      #              image = self.packages.x86_64-linux.dead-bot-docker;
-      #              build = null; # Disable build when using pre-built image
-      #            };
-      #          }
-      #        ];
-      #        pkgs = import nixpkgs {
-      #          system = "x86_64-linux";
-      #          overlays = [self.overlays.default];
-      #        };
-      #      };
+      arion = arion.lib.eval {
+        modules = [
+          (import ./arion-compose.nix)
+          ({...}: let
+            botInstances = 3;
+            mkBotServiceOverride = i: {
+              name = "dead-bot-${toString i}";
+              value.service.image = self.packages.${system}.dead-bot-docker;
+            };
+          in {
+            services = builtins.listToAttrs (
+              map mkBotServiceOverride (builtins.genList (x: x + 1) botInstances)
+            );
+          })
+        ];
+        pkgs = nixpkgs.legacyPackages.${system};
+      };
     });
 }
